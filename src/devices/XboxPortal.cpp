@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <nsysuhs/uhs.h>
 
 XboxPortalDevice::XboxPortalDevice()
     : m_ifHandle(0), m_inEpNum(0),
@@ -28,8 +29,15 @@ void XboxPortalDevice::OnDeviceAttached(UhsInterfaceProfile *profile) {
             m_inEpMask = (uint8_t)(1u << m_inEpNum);
         }
     }
-    m_hasOutEp    = false;
+    // MUST be true before SendCommand is called
     m_deviceReady = true;
+
+    // Send Ready + Activate to wake the portal up
+    uint8_t readyCmd[2]    = { 0x52, 0x00 };  // 'R'
+    uint8_t activateCmd[2] = { 0x41, 0x01 };  // 'A' 0x01
+    SendCommand(readyCmd,    sizeof(readyCmd));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    SendCommand(activateCmd, sizeof(activateCmd));
 }
 
 bool XboxPortalDevice::StartPassthrough() {
@@ -37,7 +45,7 @@ bool XboxPortalDevice::StartPassthrough() {
     if (status != UHS_STATUS_OK) return false;
 
     UhsInterfaceFilter filter{};
-    filter.match_params = MATCH_DEV_VID;  // match ONLY by VID, ignore PID
+    filter.match_params = MATCH_DEV_VID;
     filter.vid          = XBOX_PORTAL_VID;
 
     UhsInterfaceProfile profile{};
@@ -74,13 +82,11 @@ void XboxPortalDevice::ReadThread() {
             continue;
         }
 
-        // UhsSubmitBulkRequest(handle, ifHandle, epMask, direction, buffer, length, timeout)
-        // direction: 1 = IN (read from device)
         UHSStatus st = UhsSubmitBulkRequest(
             &m_uhsHandle,
             m_ifHandle,
             m_inEpMask,
-            1,                  // direction IN
+            1,                   // direction IN
             buf,
             PORTAL_PACKET_SIZE,
             100);
@@ -106,7 +112,6 @@ void XboxPortalDevice::ReadThread() {
 
 bool XboxPortalDevice::SendCommand(uint8_t *buffer, uint32_t length) {
     if (!m_deviceReady) return false;
-    // direction: 0 = OUT (write to device)
     return UhsSubmitBulkRequest(
                &m_uhsHandle,
                m_ifHandle,
@@ -138,7 +143,7 @@ bool XboxPortalIsConnected() {
     if (UhsClientOpen(&h, &c) != UHS_STATUS_OK) return false;
 
     UhsInterfaceFilter filter{};
-    filter.match_params = MATCH_DEV_VID;  // VID only
+    filter.match_params = MATCH_DEV_VID;
     filter.vid          = XBOX_PORTAL_VID;
 
     UhsInterfaceProfile profile{};

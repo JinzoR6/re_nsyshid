@@ -37,9 +37,8 @@ bool XboxPortalDevice::StartPassthrough() {
     if (status != UHS_STATUS_OK) return false;
 
     UhsInterfaceFilter filter{};
-    filter.match_params = MATCH_DEV_VID | MATCH_DEV_PID;
+    filter.match_params = MATCH_DEV_VID;  // match ONLY by VID, ignore PID
     filter.vid          = XBOX_PORTAL_VID;
-    filter.pid          = XBOX_PORTAL_PID;
 
     UhsInterfaceProfile profile{};
     status = UhsQueryInterfaces(&m_uhsHandle, &filter, &profile, 1);
@@ -139,9 +138,8 @@ bool XboxPortalIsConnected() {
     if (UhsClientOpen(&h, &c) != UHS_STATUS_OK) return false;
 
     UhsInterfaceFilter filter{};
-    filter.match_params = MATCH_DEV_VID | MATCH_DEV_PID;
+    filter.match_params = MATCH_DEV_VID;  // VID only
     filter.vid          = XBOX_PORTAL_VID;
-    filter.pid          = XBOX_PORTAL_PID;
 
     UhsInterfaceProfile profile{};
     UHSStatus st = UhsQueryInterfaces(&h, &filter, &profile, 1);

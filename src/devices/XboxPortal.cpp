@@ -21,22 +21,47 @@ XboxPortalDevice::~XboxPortalDevice() {
 void XboxPortalDevice::OnDeviceAttached(UhsInterfaceProfile *profile) {
     m_ifHandle = profile->if_handle;
 
+    // Find interrupt IN endpoint
     for (int i = 0; i < 16; i++) {
         auto &ep = profile->in_endpoints[i];
         if (ep.bLength == 0) break;
         if (ep.bmAttributes == 3) {
             m_inEpNum  = ep.bEndpointAddress & 0x0F;
             m_inEpMask = (uint8_t)(1u << m_inEpNum);
+            break;
         }
     }
-    // MUST be true before SendCommand is called
+
+    // Find interrupt OUT endpoint
+    // The wired Xbox 360 portal has OUT on endpoint 0x02
+    for (int i = 0; i < 16; i++) {
+        auto &ep = profile->out_endpoints[i];
+        if (ep.bLength == 0) break;
+        if (ep.bmAttributes == 3) {
+            m_outEpNum = ep.bEndpointAddress & 0x0F;
+            m_hasOutEp = true;
+            break;
+        }
+    }
+
+    // If no OUT endpoint found in profile, default to 2 (documented)
+    if (!m_hasOutEp) {
+        m_outEpNum = 2;
+        m_hasOutEp = true;
+    }
+
+    // MUST be set BEFORE SendCommand is called
     m_deviceReady = true;
 
-    // Send Ready + Activate to wake the portal up
-    uint8_t readyCmd[2]    = { 0x52, 0x00 };  // 'R'
-    uint8_t activateCmd[2] = { 0x41, 0x01 };  // 'A' 0x01
+    // Commands must be padded to 0x20 bytes for the wired portal
+    uint8_t readyCmd[32]    = {};
+    uint8_t activateCmd[32] = {};
+    readyCmd[0]    = 0x52; // 'R'
+    activateCmd[0] = 0x41; // 'A'
+    activateCmd[1] = 0x01;
+
     SendCommand(readyCmd,    sizeof(readyCmd));
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SendCommand(activateCmd, sizeof(activateCmd));
 }
 
@@ -95,6 +120,7 @@ void XboxPortalDevice::ReadThread() {
             uint8_t  *payload = buf;
             uint32_t  length  = PORTAL_PACKET_SIZE;
 
+            // Strip the 0x0B 0x14 Xbox prefix (documented for wired portal)
             if (length >= 2 &&
                 payload[0] == 0x0B &&
                 payload[1] == 0x14) {
@@ -112,10 +138,11 @@ void XboxPortalDevice::ReadThread() {
 
 bool XboxPortalDevice::SendCommand(uint8_t *buffer, uint32_t length) {
     if (!m_deviceReady) return false;
+    uint8_t outMask = (uint8_t)(1u << m_outEpNum);
     return UhsSubmitBulkRequest(
                &m_uhsHandle,
                m_ifHandle,
-               (uint8_t)(1u << m_outEpNum),
+               outMask,
                0,               // direction OUT
                buffer,
                (int32_t)length,

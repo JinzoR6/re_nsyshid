@@ -4,7 +4,6 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
-#include <nsysuhs/uhs.h>
 
 XboxPortalDevice::XboxPortalDevice()
     : m_ifHandle(0), m_inEpNum(0),
@@ -21,39 +20,36 @@ XboxPortalDevice::~XboxPortalDevice() {
 void XboxPortalDevice::OnDeviceAttached(UhsInterfaceProfile *profile) {
     m_ifHandle = profile->if_handle;
 
-    // Find interrupt IN endpoint
+    // Scan IN endpoints
     for (int i = 0; i < 16; i++) {
         auto &ep = profile->in_endpoints[i];
         if (ep.bLength == 0) break;
         if (ep.bmAttributes == 3) {
             m_inEpNum  = ep.bEndpointAddress & 0x0F;
             m_inEpMask = (uint8_t)(1u << m_inEpNum);
-            break;
         }
     }
 
-    // Find interrupt OUT endpoint
-    // The wired Xbox 360 portal has OUT on endpoint 0x02
+    // Scan OUT endpoints
+    m_hasOutEp = false;
     for (int i = 0; i < 16; i++) {
         auto &ep = profile->out_endpoints[i];
         if (ep.bLength == 0) break;
         if (ep.bmAttributes == 3) {
             m_outEpNum = ep.bEndpointAddress & 0x0F;
             m_hasOutEp = true;
-            break;
         }
     }
 
-    // If no OUT endpoint found in profile, default to 2 (documented)
+    // Xbox 360 wired portal always has OUT on endpoint 2 — hardcode as fallback
     if (!m_hasOutEp) {
         m_outEpNum = 2;
         m_hasOutEp = true;
     }
 
-    // MUST be set BEFORE SendCommand is called
     m_deviceReady = true;
 
-    // Commands must be padded to 0x20 bytes for the wired portal
+    // Send Ready + Activate commands to wake up the portal
     uint8_t readyCmd[32]    = {};
     uint8_t activateCmd[32] = {};
     readyCmd[0]    = 0x52; // 'R'
@@ -61,7 +57,7 @@ void XboxPortalDevice::OnDeviceAttached(UhsInterfaceProfile *profile) {
     activateCmd[1] = 0x01;
 
     SendCommand(readyCmd,    sizeof(readyCmd));
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     SendCommand(activateCmd, sizeof(activateCmd));
 }
 
@@ -75,6 +71,13 @@ bool XboxPortalDevice::StartPassthrough() {
 
     UhsInterfaceProfile profile{};
     status = UhsQueryInterfaces(&m_uhsHandle, &filter, &profile, 1);
+    if (status != UHS_STATUS_OK) {
+        UhsClientClose(&m_uhsHandle);
+        return false;
+    }
+
+    // REQUIRED: must acquire the interface before any transfers
+    status = UhsAcquireInterface(&m_uhsHandle, profile.if_handle, nullptr, nullptr);
     if (status != UHS_STATUS_OK) {
         UhsClientClose(&m_uhsHandle);
         return false;
@@ -120,7 +123,7 @@ void XboxPortalDevice::ReadThread() {
             uint8_t  *payload = buf;
             uint32_t  length  = PORTAL_PACKET_SIZE;
 
-            // Strip the 0x0B 0x14 Xbox prefix (documented for wired portal)
+            // Strip the 0x0B 0x14 Xbox prefix if present
             if (length >= 2 &&
                 payload[0] == 0x0B &&
                 payload[1] == 0x14) {

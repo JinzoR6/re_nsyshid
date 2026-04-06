@@ -21,11 +21,15 @@ static XboxPortalDevice *g_xboxPortal = nullptr;
 
 static void StartXboxPassthrough() {
     if (g_xboxPortal) return;
-    if (!XboxPortalIsConnected()) return;
     g_xboxPortal = new XboxPortalDevice();
     if (!g_xboxPortal->StartPassthrough()) {
         delete g_xboxPortal;
         g_xboxPortal = nullptr;
+        // Red = passthrough failed
+        g_skyportal.SetLeds(0x01, 255, 0, 0);
+    } else {
+        // Green = passthrough connected
+        g_skyportal.SetLeds(0x01, 0, 255, 0);
     }
 }
 

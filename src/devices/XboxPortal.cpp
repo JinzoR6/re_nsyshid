@@ -25,7 +25,7 @@ void XboxPortalDevice::OnDeviceAttached(UhsInterfaceProfile *profile) {
         if (ep.bLength == 0) break;
         if (ep.bmAttributes == 3) {
             m_inEpNum  = ep.bEndpointAddress & 0x0F;
-            m_inEpMask = (1u << m_inEpNum);
+            m_inEpMask = (uint8_t)(1u << m_inEpNum);
         }
     }
     m_hasOutEp    = false;
@@ -75,14 +75,20 @@ void XboxPortalDevice::ReadThread() {
             continue;
         }
 
-        uint32_t  transferred = 0;
+        // UhsSubmitBulkRequest(handle, ifHandle, epMask, direction, buffer, length, timeout)
+        // direction: 1 = IN (read from device)
         UHSStatus st = UhsSubmitBulkRequest(
-            &m_uhsHandle, m_ifHandle, m_inEpMask,
-            buf, PORTAL_PACKET_SIZE, &transferred, 100);
+            &m_uhsHandle,
+            m_ifHandle,
+            m_inEpMask,
+            1,                  // direction IN
+            buf,
+            PORTAL_PACKET_SIZE,
+            100);
 
-        if (st == UHS_STATUS_OK && transferred > 0) {
+        if (st == UHS_STATUS_OK) {
             uint8_t  *payload = buf;
-            uint32_t  length  = transferred;
+            uint32_t  length  = PORTAL_PACKET_SIZE;
 
             if (length >= 2 &&
                 payload[0] == 0x0B &&
@@ -101,10 +107,15 @@ void XboxPortalDevice::ReadThread() {
 
 bool XboxPortalDevice::SendCommand(uint8_t *buffer, uint32_t length) {
     if (!m_deviceReady) return false;
-    uint32_t transferred = 0;
-    return UhsSubmitBulkRequest(&m_uhsHandle, m_ifHandle,
-                                1u << m_outEpNum,
-                                buffer, length, &transferred, 200)
+    // direction: 0 = OUT (write to device)
+    return UhsSubmitBulkRequest(
+               &m_uhsHandle,
+               m_ifHandle,
+               (uint8_t)(1u << m_outEpNum),
+               0,               // direction OUT
+               buffer,
+               (int32_t)length,
+               200)
            == UHS_STATUS_OK;
 }
 
@@ -127,7 +138,7 @@ bool XboxPortalIsConnected() {
     UhsConfig c{};
     if (UhsClientOpen(&h, &c) != UHS_STATUS_OK) return false;
 
-    UhsInterfaceFilter  filter{};
+    UhsInterfaceFilter filter{};
     filter.match_params = MATCH_DEV_VID | MATCH_DEV_PID;
     filter.vid          = XBOX_PORTAL_VID;
     filter.pid          = XBOX_PORTAL_PID;

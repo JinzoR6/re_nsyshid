@@ -1,4 +1,5 @@
 #include "Skylander.h"
+#include "XboxPortal.h"
 #include "utils/FSUtils.hpp"
 #include "utils/logger.h"
 
@@ -15,6 +16,25 @@
 #include <wut.h>
 
 SkylanderPortal g_skyportal;
+
+static XboxPortalDevice *g_xboxPortal = nullptr;
+
+static void StartXboxPassthrough() {
+    if (g_xboxPortal) return;
+    if (!XboxPortalIsConnected()) return;
+    g_xboxPortal = new XboxPortalDevice();
+    if (!g_xboxPortal->StartPassthrough()) {
+        delete g_xboxPortal;
+        g_xboxPortal = nullptr;
+    }
+}
+
+static void StopXboxPassthrough() {
+    if (!g_xboxPortal) return;
+    g_xboxPortal->StopPassthrough();
+    delete g_xboxPortal;
+    g_xboxPortal = nullptr;
+}
 
 const std::map<const std::pair<const uint16_t, const uint16_t>, const char *>
         s_listSkylanders = {
@@ -790,6 +810,13 @@ bool SkylanderUSBDevice::GetReport(uint8_t *buffer,
 
 bool SkylanderUSBDevice::SetReport(uint8_t *buffer,
                                    uint32_t bufferLength) {
+    // Forward commands to physical Xbox portal when in passthrough mode
+    if (g_xboxPortal) {
+        g_xboxPortal->Write(buffer, bufferLength);
+    }
+
+    // Always run software emulation too so emulated figures still work
+    // and the activation handshake generates the correct response
     g_skyportal.ControlTransfer(buffer, bufferLength);
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     return true;
@@ -819,6 +846,17 @@ bool SkylanderUSBDevice::SetProtocol(uint8_t ifIndex,
 
 bool SkylanderUSBDevice::Read(uint8_t *buffer,
                               uint32_t bufferLength) {
+    // Try Xbox portal passthrough first; start it on first Read if portal is present
+    if (!g_xboxPortal) {
+        StartXboxPassthrough();
+    }
+
+    if (g_xboxPortal && g_xboxPortal->Read(buffer, bufferLength)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return true;
+    }
+
+    // Fall back to software emulation
     const std::array<uint8_t, 64> response = g_skyportal.GetStatus();
     memcpy(buffer, response.data(), bufferLength);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -897,7 +935,6 @@ std::array<uint8_t, 64> SkylanderPortal::GetStatus() {
     if (!m_queries.empty()) {
         interruptResponse = m_queries.front();
         m_queries.pop();
-        // This needs to happen after ~22 milliseconds
     } else {
         uint32_t status = 0;
         uint8_t active  = 0x00;
@@ -928,11 +965,9 @@ std::array<uint8_t, 64> SkylanderPortal::GetStatus() {
 void SkylanderPortal::Activate() {
     std::lock_guard lock(m_skyMutex);
     if (m_activated) {
-        // If the portal was already active no change is needed
         return;
     }
 
-    // If not we need to advertise change to all the figures present on the portal
     for (auto &s : m_skylanders) {
         if (s.status & 1) {
             s.queuedStatus.push(3);
@@ -947,7 +982,6 @@ void SkylanderPortal::Deactivate() {
     std::lock_guard lock(m_skyMutex);
 
     for (auto &s : m_skylanders) {
-        // check if at the end of the updates there would be a figure on the portal
         if (!s.queuedStatus.empty()) {
             s.status       = s.queuedStatus.back();
             s.queuedStatus = std::queue<uint8_t>();
@@ -1038,7 +1072,6 @@ uint8_t SkylanderPortal::LoadSkylander(uint8_t *buf, std::string file) {
     }
     uint8_t foundSlot = 0xFF;
 
-    // mimics spot retaining on the portal
     for (auto i = 0; i < MAX_SKYLANDERS; i++) {
         if ((m_skylanders[i].status & 1) == 0) {
             if (m_skylanders[i].lastId == skySerial) {
@@ -1076,7 +1109,6 @@ bool SkylanderPortal::RemoveSkylander(uint8_t skyNum) {
         thesky.queuedStatus.push(Skylander::REMOVING);
         thesky.queuedStatus.push(Skylander::REMOVED);
         thesky.Save();
-        //fclose(thesky.skyFile);
         thesky.filePath                = "";
         m_skylanderUIPositions[skyNum] = std::nullopt;
         return true;
